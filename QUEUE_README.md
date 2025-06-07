@@ -14,9 +14,24 @@
 
 ## API 端点
 
-### 1. 提交图像生成请求
+### 1. 同步图像生成请求（推荐）
 ```
 GET /generate/img/priv?prompt=<prompt>&seed=<seed>&model=<model>
+```
+
+**特点**:
+- 直接在同一请求中返回生成的图像
+- 请求会在队列中等待，直到处理完成
+- 响应时间通常为5-10秒（取决于队列长度）
+
+**响应**:
+- 成功: 直接返回生成的图像 (image/png)
+- 队列满: HTTP 423 "Request queue is full. Please try again later."
+- 失败: HTTP 500 包含错误信息
+
+### 2. 异步图像生成请求
+```
+GET /generate/img/async?prompt=<prompt>&seed=<seed>&model=<model>
 ```
 
 **响应示例**:
@@ -94,7 +109,13 @@ DELETE /queue/clear
 
 ## 使用流程
 
-1. **提交请求**: 调用 `/generate/img/priv` 获取 `request_id`
+### 同步模式（推荐）
+1. **直接调用**: 调用 `/generate/img/priv`
+2. **等待响应**: 请求会在队列中等待并直接返回图像结果
+3. **处理结果**: 直接获得生成的图像数据
+
+### 异步模式
+1. **提交请求**: 调用 `/generate/img/async` 获取 `request_id`
 2. **轮询状态**: 使用 `request_id` 调用 `/status/{request_id}` 检查状态
 3. **获取结果**: 当状态为 `completed` 时，调用 `/result/{request_id}` 获取图像
 

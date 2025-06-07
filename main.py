@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import StreamingResponse
+from contextlib import asynccontextmanager
 from boilerplate import API
 from novelai_api.ImagePreset import ImageModel, ImagePreset
 import io
@@ -9,7 +10,33 @@ from typing import Dict, Any
 import uuid
 import time
 
-app = FastAPI()
+# 全局变量声明
+request_queue = None
+request_results: Dict[str, Dict[str, Any]] = {}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    global request_queue
+
+    # 启动时初始化
+    request_queue = RequestQueue(max_queue_size=10)
+
+    # 启动后台任务
+    queue_task = asyncio.create_task(request_queue.process_requests())
+    cleanup_task = asyncio.create_task(cleanup_old_requests())
+
+    print("Request queue processor started")
+    print("Request cleanup task started")
+
+    yield
+
+    # 关闭时清理
+    queue_task.cancel()
+    cleanup_task.cancel()
+    print("Background tasks stopped")
+
+app = FastAPI(lifespan=lifespan)
 output_dir = Path("results")
 output_dir.mkdir(exist_ok=True)
 
@@ -52,18 +79,30 @@ class RequestQueue:
                     # 处理请求
                     result = await self._process_single_request(request_data)
 
-                    # 更新全局结果存储
+                    # 将结果存储到结果容器中
+                    if 'result_container' in request_data:
+                        request_data['result_container']['result'] = result
+
+                    # 更新全局结果存储（如果存在）
                     if request_id in request_results:
                         request_results[request_id]['result'] = result
                         request_results[request_id]['status'] = 'completed'
 
                 except Exception as e:
-                    # 更新全局结果存储
+                    # 将错误存储到结果容器中
+                    if 'result_container' in request_data:
+                        request_data['result_container']['error'] = str(e)
+
+                    # 更新全局结果存储（如果存在）
                     if request_id in request_results:
                         request_results[request_id]['error'] = str(e)
                         request_results[request_id]['status'] = 'failed'
                     print(f"Request {request_id} failed: {e}")
                 finally:
+                    # 通知等待的请求完成
+                    if 'completion_event' in request_data:
+                        request_data['completion_event'].set()
+
                     # 标记任务完成
                     self.queue.task_done()
                     async with self._lock:
@@ -112,19 +151,7 @@ class RequestQueue:
             "current_request_id": self.current_request_id
         }
 
-# 创建全局队列实例
-request_queue = RequestQueue(max_queue_size=10)
-
-# 存储请求结果的字典
-request_results: Dict[str, Dict[str, Any]] = {}
-
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时启动队列处理器和清理任务"""
-    asyncio.create_task(request_queue.process_requests())
-    asyncio.create_task(cleanup_old_requests())
-    print("Request queue processor started")
-    print("Request cleanup task started")
+# 全局队列实例将在lifespan中初始化
 
 async def cleanup_old_requests():
     """定期清理过期的请求结果（超过1小时的请求）"""
@@ -156,7 +183,52 @@ async def generate_image(
     seed: int = Query(0),
     model: str = Query("Anime_v45_Full")
 ):
-    """提交图像生成请求到队列"""
+    """同步处理图像生成请求，在队列中等待并直接返回结果"""
+    request_data = {
+        'prompt': prompt,
+        'seed': seed,
+        'model': model
+    }
+
+    # 检查队列是否已满
+    if request_queue.queue.qsize() >= request_queue.max_queue_size:
+        raise HTTPException(status_code=423, detail="Request queue is full. Please try again later.")
+
+    # 添加请求到队列并等待处理完成
+    request_id = str(uuid.uuid4())
+    request_data['request_id'] = request_id
+    request_data['timestamp'] = time.time()
+
+    # 创建一个事件来等待处理完成
+    completion_event = asyncio.Event()
+    result_container = {'result': None, 'error': None}
+
+    # 将完成事件和结果容器添加到请求数据中
+    request_data['completion_event'] = completion_event
+    request_data['result_container'] = result_container
+
+    # 添加到队列
+    await request_queue.queue.put(request_data)
+
+    # 等待处理完成
+    await completion_event.wait()
+
+    # 检查结果
+    if result_container['error']:
+        raise HTTPException(status_code=500, detail=f"Image generation failed: {result_container['error']}")
+
+    if result_container['result'] is None:
+        raise HTTPException(status_code=500, detail="Image generation failed")
+
+    return StreamingResponse(io.BytesIO(result_container['result']), media_type="image/png")
+
+@app.get("/generate/img/async")
+async def generate_image_async(
+    prompt: str = Query("1girl, 1boy"),
+    seed: int = Query(0),
+    model: str = Query("Anime_v45_Full")
+):
+    """异步提交图像生成请求到队列，返回request_id用于后续查询"""
     request_data = {
         'prompt': prompt,
         'seed': seed,
