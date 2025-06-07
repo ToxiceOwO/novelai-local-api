@@ -1,4 +1,3 @@
-
 import json
 from datetime import datetime
 from logging import Logger, StreamHandler
@@ -8,10 +7,12 @@ from typing import Any, Optional
 
 from aiohttp import ClientSession
 from msgpackr.constants import UNDEFINED
+from aiohttp import ClientSession, ClientTimeout
 
+# 你可以在这里改代理地址
 from novelai_api import NovelAIAPI
 from novelai_api.utils import get_encryption_key
-
+PROXY_URL = "http://127.0.0.1:7897"  # 或 socks5://127.0.0.1:1080
 
 class API:
     """
@@ -68,7 +69,13 @@ class API:
         return get_encryption_key(self._username, self._password)
 
     async def __aenter__(self):
-        self._session = ClientSession()
+        # 注意：ClientSession 不支持全局 proxy 参数，我们用封装方式解决
+        class ProxyClientSession(ClientSession):
+            async def _request(self_inner, method, url, **kwargs):
+                kwargs.setdefault("proxy", PROXY_URL)
+                return await super()._request(method, url, **kwargs)
+
+        self._session = ProxyClientSession(timeout=ClientTimeout(total=60))
         await self._session.__aenter__()
 
         self.api.attach_session(self._session)
