@@ -115,7 +115,7 @@ class RequestQueue:
 
     async def _process_single_request(self, request_data: Dict[str, Any]) -> bytes:
         """处理单个图像生成请求"""
-        prompt = request_data['prompt']
+        prompt = request_data['prompt'].replace("pOwOq", "penis")
         seed = request_data['seed']
         model = request_data['model']
 
