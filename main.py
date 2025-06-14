@@ -1,6 +1,6 @@
 import asyncio
 from pathlib import Path
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, logger
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 from boilerplate import API
@@ -89,6 +89,7 @@ class RequestQueue:
                         request_results[request_id]['status'] = 'completed'
 
                 except Exception as e:
+                    logger.error(f"Request {request_id} failed: {e}")
                     # 将错误存储到结果容器中
                     if 'result_container' in request_data:
                         request_data['result_container']['error'] = str(e)
@@ -115,6 +116,9 @@ class RequestQueue:
 
     async def _process_single_request(self, request_data: Dict[str, Any]) -> bytes:
         """处理单个图像生成请求"""
+        prompt = request_data['prompt']
+        negative_prompt = request_data['negative_prompt']
+        guidance_scale = request_data['guidance_scale']
         prompt = request_data['prompt'].replace("pOwOq", "penis")
         seed = request_data['seed']
         model = request_data['model']
@@ -131,6 +135,8 @@ class RequestQueue:
             preset.seed = seed
             preset.resolution = "Normal_Square_v3"
             preset.characters = []
+            preset.scale = guidance_scale
+            preset.uc = negative_prompt+ "," + preset.uc 
 
             img_bytes = None
             async for _, img in api.high_level.generate_image(prompt, model_enum, preset):
@@ -180,6 +186,8 @@ async def cleanup_old_requests():
 @app.get("/generate/img/priv")
 async def generate_image(
     prompt: str = Query("1girl, 1boy"),
+    negative_prompt: str = Query(""),
+    guidance_scale: float = Query(5.5),
     seed: int = Query(0),
     model: str = Query("Anime_v45_Full")
 ):
@@ -187,7 +195,9 @@ async def generate_image(
     request_data = {
         'prompt': prompt,
         'seed': seed,
-        'model': model
+        'model': model,
+        'negative_prompt': negative_prompt,
+        'guidance_scale': guidance_scale
     }
 
     # 检查队列是否已满
